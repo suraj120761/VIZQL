@@ -3,6 +3,7 @@ import pymysql
 import os
 import re
 import json
+from decimal import Decimal
 from dotenv import load_dotenv
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -47,6 +48,20 @@ def get_mysql_schema():
     finally:
         conn.close()
     return schema
+
+
+def convert_decimals(obj):
+    """
+    Recursively convert Decimal values to float.
+    """
+    if isinstance(obj, list):
+        return [convert_decimals(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: convert_decimals(v) for k, v in obj.items()}
+    elif isinstance(obj, Decimal):
+        return float(obj)
+    else:
+        return obj
 
 
 class AskQuestionAPIView(APIView):
@@ -98,6 +113,9 @@ Only output the SQL query. Do not explain anything.
                 rows = cursor.fetchall()
                 columns = [desc[0] for desc in cursor.description]
                 result = [dict(zip(columns, row)) for row in rows]
+            conn.close()
+
+            result = convert_decimals(result)
 
             # Step 4: Generate explanation
             explanation_prompt = f"Summarize the result of this query in one sentence:\n{sql_query}\n\nResult: {json.dumps(result[:10])}"
