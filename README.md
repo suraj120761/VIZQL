@@ -68,7 +68,7 @@ npm install
 # Start frontend server
 npm run dev
 
-
+npm install jspdf html2canvas # for download
 
 VIZQL/
 │
