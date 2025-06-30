@@ -2,6 +2,7 @@ import openai
 import pymysql
 import os
 import re
+import json
 from dotenv import load_dotenv
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -20,13 +21,13 @@ DB_CONFIG = {
     "host": "localhost",
     "user": "root",
     "password": "Admin#123456",
-    "database": "company",
+    "database": "vizql",
 }
 
 
 def get_mysql_schema():
     """
-    Dynamically fetch all table names and columns from the MySQL database.
+    Dynamically fetch all table names and their columns from the database.
     """
     schema = ""
     try:
@@ -55,19 +56,23 @@ class AskQuestionAPIView(APIView):
             return Response({"error": "Question is required."}, status=400)
 
         try:
-            # Fetch schema from the actual MySQL database
+            # Step 1: Extract schema
             schema = get_mysql_schema()
 
-            # Step 1: Convert natural language to SQL
+            # Step 2: Generate SQL from NL using OpenAI
             sql_prompt = f"""
-Use the following MySQL schema to write a valid SQL SELECT query.
+You are a MySQL expert.
 
+Here is the current database schema:
 {schema}
 
-Convert this natural language question into a valid MySQL SELECT query:
-"{question}"
+Write an optimal MySQL SELECT query for the following natural language request.
+The query may involve joins, filters, grouping, or sorting.
 
-Only output the raw SQL query. Do not explain anything.
+NL Question:
+\"{question}\"
+
+Only output the SQL query. Do not explain anything.
 """
 
             completion = openai.ChatCompletion.create(
@@ -78,15 +83,15 @@ Only output the raw SQL query. Do not explain anything.
                 ]
             )
 
-            raw_response = completion["choices"][0]["message"]["content"]
-            sql_match = re.search(r"(SELECT|UPDATE|INSERT|DELETE)[\s\S]+?;", raw_response, re.IGNORECASE)
+            response_content = completion["choices"][0]["message"]["content"]
+            sql_match = re.search(r"(SELECT[\s\S]+?;)", response_content, re.IGNORECASE)
 
             if not sql_match:
                 return Response({"error": "Could not extract a valid SQL query."}, status=400)
 
-            sql_query = sql_match.group(0).strip()
+            sql_query = sql_match.group(1).strip()
 
-            # Step 2: Execute SQL
+            # Step 3: Execute the SQL query
             conn = pymysql.connect(**DB_CONFIG)
             with conn.cursor() as cursor:
                 cursor.execute(sql_query)
@@ -94,15 +99,18 @@ Only output the raw SQL query. Do not explain anything.
                 columns = [desc[0] for desc in cursor.description]
                 result = [dict(zip(columns, row)) for row in rows]
 
-            # Step 3: Ask OpenAI to summarize the result
-            explanation_prompt = f"Here is the SQL result: {result}. Summarize it in one sentence."
-            explanation = openai.ChatCompletion.create(
+            # Step 4: Generate explanation
+            explanation_prompt = f"Summarize the result of this query in one sentence:\n{sql_query}\n\nResult: {json.dumps(result[:10])}"
+
+            explanation_completion = openai.ChatCompletion.create(
                 engine=deployment_name,
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that summarizes SQL results."},
+                    {"role": "system", "content": "You summarize SQL result into a simple sentence."},
                     {"role": "user", "content": explanation_prompt}
                 ]
-            )["choices"][0]["message"]["content"]
+            )
+
+            explanation = explanation_completion["choices"][0]["message"]["content"]
 
             return Response({
                 "sql": sql_query,
